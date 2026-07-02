@@ -79,23 +79,36 @@ export class VaultsService {
    */
   calculateApy(
     apr: number,
-    frequency: CompoundingFrequency = CompoundingFrequency.DAILY,
+    frequency: CompoundingFrequency | string | null | undefined = CompoundingFrequency.DAILY,
   ): number {
     if (apr === 0) return 0;
 
-    const n = COMPOUNDING_FREQUENCY_N[frequency];
+    const normalizedFrequency = this.normalizeCompoundingFrequency(frequency);
+    const n = COMPOUNDING_FREQUENCY_N[normalizedFrequency];
     const decimalApr = apr / 100;
     const apy = Math.pow(1 + decimalApr / n, n) - 1;
 
-    return Math.round(apy * 10000) / 100; // Return as percentage, rounded to 2 decimal places
+    return Number((apy * 100).toFixed(2));
   }
 
   /**
    * Get the effective compounding frequency for a vault.
-   * Falls back to DAILY if no strategy is assigned.
+   * Falls back to DAILY if no strategy is assigned or the stored value is invalid.
    */
   private getVaultCompoundingFrequency(vault: Vault): CompoundingFrequency {
-    return vault.strategy?.compoundingFrequency ?? CompoundingFrequency.DAILY;
+    return this.normalizeCompoundingFrequency(vault.strategy?.compoundingFrequency);
+  }
+
+  private normalizeCompoundingFrequency(
+    frequency: CompoundingFrequency | string | null | undefined,
+  ): CompoundingFrequency {
+    if (frequency === CompoundingFrequency.WEEKLY) {
+      return CompoundingFrequency.WEEKLY;
+    }
+    if (frequency === CompoundingFrequency.MONTHLY) {
+      return CompoundingFrequency.MONTHLY;
+    }
+    return CompoundingFrequency.DAILY;
   }
 
   async getVaultById(vaultId: string): Promise<Vault> {
@@ -644,7 +657,8 @@ export class VaultsService {
 
   mapVaultToResponse(vault: Vault): VaultResponseDto {
     const apr = Number(vault.interestRate);
-    const apy = this.calculateApy(apr, this.getVaultCompoundingFrequency(vault));
+    const compoundingFrequency = this.getVaultCompoundingFrequency(vault);
+    const apy = this.calculateApy(apr, compoundingFrequency);
 
     return {
       id: vault.id,
@@ -662,6 +676,7 @@ export class VaultsService {
       interestRate: apr,
       apr,
       apy,
+      compoundingFrequency,
       maturityDate: vault.maturityDate,
       lockPeriodEnd: vault.lockPeriodEnd,
       isPublic: vault.isPublic,
@@ -697,10 +712,11 @@ export class VaultsService {
       .into('vault_apy_history')
       .values({
         vault_id: vault.id,
+        apr,
         apy,
         snapshot_date: snapshotDate,
       })
-      .orIgnore() // Ignore if a snapshot for this vault/date already exists
+      .orIgnore()
       .execute();
   }
 

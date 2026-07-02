@@ -101,6 +101,13 @@ export class VaultResponseDto {
   apy: number;
 
   @ApiProperty({
+    example: 'daily',
+    description: 'Compounding frequency used for APY calculation',
+    enum: ['daily', 'weekly', 'monthly'],
+  })
+  compoundingFrequency: string;
+
+  @ApiProperty({
     example: '2024-12-31T23:59:59Z',
     description: 'Vault maturity date',
     required: false,
