@@ -30,8 +30,8 @@ jobs:
           cache: npm
           cache-dependency-path: harvest-finance/backend/package-lock.json
 
-      - run: npm ci || true
-      - run: npm run lint || true
+      - run: npm ci
+      - run: npm run lint
 
   backend-test:
     name: Backend — Unit + Integration Tests
@@ -86,9 +86,9 @@ jobs:
           cache: npm
           cache-dependency-path: harvest-finance/backend/package-lock.json
 
-      - run: npm ci || true
-      - run: npm run build || true
-      - run: npm test -- --forceExit --passWithNoTests || true
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:cov -- --forceExit
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         if: always()
@@ -130,8 +130,8 @@ jobs:
           cache: npm
           cache-dependency-path: harvest-finance/frontend/package-lock.json
 
-      - run: npm ci || true
-      - run: npm run lint || true
+      - run: npm ci
+      - run: npm run lint
 
   frontend-test:
     name: Frontend — Tests
@@ -148,9 +148,9 @@ jobs:
           cache: npm
           cache-dependency-path: harvest-finance/frontend/package-lock.json
 
-      - run: npm ci || true
-      - run: npm test -- --passWithNoTests || true
-      - run: npm run test:vitest -- --run --passWithNoTests || true
+      - run: npm ci
+      - run: npm run test:cov -- --passWithNoTests
+      - run: npm run test:vitest -- --run --passWithNoTests
 
   frontend-build:
     name: Frontend — Next.js Build
@@ -161,6 +161,7 @@ jobs:
         working-directory: harvest-finance/frontend
     env:
       NEXT_PUBLIC_API_URL: https://api.harvestfinance.io
+      ANALYZE: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -170,8 +171,19 @@ jobs:
           cache: npm
           cache-dependency-path: harvest-finance/frontend/package-lock.json
 
-      - run: npm ci || true
-      - run: npm run build || true
+      - run: npm ci
+      - run: npm run build
+      - name: Route-level bundle budget
+        run: npm run check:budget
+      - name: Upload bundle report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-bundle-report-${{ github.sha }}
+          path: |
+            harvest-finance/frontend/.next/bundle-report.json
+            harvest-finance/frontend/.next/analyze/
+          retention-days: 14
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -195,11 +207,11 @@ jobs:
 
       - name: Run forge tests
         working-directory: contracts
-        run: forge test -vvv || true
+        run: forge test -vvv
 
       - name: Forge coverage
         working-directory: contracts
-        run: forge coverage --report lcov || true
+        run: forge coverage --report lcov
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4

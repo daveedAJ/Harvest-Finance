@@ -41,7 +41,6 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { RewardsModule } from './rewards/rewards.module';
 import { ObservabilityModule } from './observability/observability.module';
 import { AppConfigModule } from './config/config.module'; 
-import { TelegramModule } from './integrations/telegram/telegram.module';
 
 import {
   Achievement,
@@ -79,6 +78,7 @@ import { CropCycle } from './database/entities/crop-cycle.entity';
 import { InsurancePlan } from './database/entities/insurance-plan.entity';
 import { InsuranceSubscription } from './database/entities/insurance-subscription.entity';
 import { CreateInitialSchema1700000000000 } from './database/migrations/1700000000000-CreateInitialSchema';
+import { CreateVaultsAndDeposits1700000000001 } from './database/migrations/1700000000001-CreateVaultsAndDeposits';
 import { CreateAchievements1700000000004 } from './database/migrations/1700000000004-CreateAchievements';
 import { CreateRewards1700000000005 } from './database/migrations/1700000000005-CreateRewards';
 import { CreateNotifications1700000000006 } from './database/migrations/1700000000006-CreateNotifications';
@@ -94,8 +94,9 @@ import { CreateStrategyAndApyHistory1700000000017 } from './database/migrations/
 import { CreateVaultScoreHistory1700000000018 } from './database/migrations/1700000000018-CreateVaultScoreHistory';
 
 import { CreateVaultReservations1700000000018 } from './database/migrations/1700000000018-CreateVaultReservations';
-import { AddDepositorConcentrationThreshold1700000000022 } from './database/migrations/1700000000022-AddDepositorConcentrationThreshold';
 import { VaultReservation } from './vaults/entities/vault-reservation.entity';
+import { VaultApproval } from './database/entities/vault-approval.entity';
+import { InsuranceClaim } from './database/entities/insurance-claim.entity';
 import { Session } from './database/entities/session.entity';
 import { SecurityEvent } from './database/entities/security-event.entity';
 import { CreateVaultApyHistory1700000000017 } from './database/migrations/1700000000017-CreateVaultApyHistory';
@@ -104,9 +105,6 @@ import { AddRefreshTokenRotation1700000000022 } from './database/migrations/1700
 import { DomainEventsModule } from './domain-events';
 import { DomainEventHandlersModule } from './common/events';
 import { WebhooksModule } from './webhooks/webhooks.module';
-import { WalletsModule } from './wallets/wallets.module';
-import { CustodialWallet } from './wallets/entities/custodial-wallet.entity';
-import { CreateCustodialWallets1700000000021 } from './database/migrations/1700000000021-CreateCustodialWallets';
 
 @Module({
   imports: [
@@ -150,13 +148,23 @@ import { CreateCustodialWallets1700000000021 } from './database/migrations/17000
           InsuranceSubscription,
           SorobanEvent,
           IndexerState,
-          YieldAnalytics,
-          Strategy,
-          VaultApyHistory,
-          CustodialWallet,
-        ],
+YieldAnalytics,
+           VaultReservation,
+           CustodialWallet,
+           VaultApproval,
+           InsuranceClaim,
+           CommunityPost,
+           CommunityComment,
+           PostReaction,
+           CommunityGroup,
+           GroupMembership,
+           CoopListing,
+           CoopOrder,
+           CoopReview,
+         ],
         migrations: [
           CreateInitialSchema1700000000000,
+          CreateVaultsAndDeposits1700000000001,
           CreateAchievements1700000000004,
           CreateRewards1700000000005,
           CreateNotifications1700000000006,
@@ -216,7 +224,6 @@ import { CreateCustodialWallets1700000000021 } from './database/migrations/17000
     StateSyncModule,
     WebhooksModule,
     DomainEventHandlersModule,
-    TelegramModule,
   ],
   controllers: [AppController],
   providers: [

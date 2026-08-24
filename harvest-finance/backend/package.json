@@ -30,6 +30,7 @@
   },
   "dependencies": {
     "@apollo/server": "^5.5.1",
+    "@as-integrations/express5": "^1.1.2",
     "@aws-sdk/client-secrets-manager": "^3.1037.0",
     "@hookform/resolvers": "^5.2.2",
     "@nestjs/apollo": "^13.4.2",
@@ -143,6 +144,14 @@
       "**/*.(t|j)s"
     ],
     "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "coverageThreshold": {
+      "global": {
+        "branches": 80,
+        "functions": 80,
+        "lines": 80,
+        "statements": 80
+      }
+    }
   }
 }

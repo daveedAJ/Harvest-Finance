@@ -61,7 +61,7 @@ export function AIInsightsPanel({
   const [displayedRecs, setDisplayedRecs] = useState<AIRecommendation[]>([]);
   const [showAll, setShowAll] = useState(false);
 
-  useEffect(() => {
+  const updateDisplayedRecs = useCallback(() => {
     let filtered = recommendations;
     
     if (activeFilter !== 'all') {
@@ -77,6 +77,10 @@ export function AIInsightsPanel({
 
     setDisplayedRecs(showAll ? sorted : sorted.slice(0, maxItems));
   }, [recommendations, activeFilter, showAll, maxItems]);
+
+  useEffect(() => {
+    updateDisplayedRecs();
+  }, [updateDisplayedRecs]);
 
   const categories = ['all', 'crop', 'soil', 'weather', 'market', 'general'];
 
@@ -101,9 +105,10 @@ export function AIInsightsPanel({
     if (!isOnline) return;
     
     try {
-      const response = await fetch('/api/v1/ai-assistant/recommend');
-      if (response.ok) {
-        const freshRecs: AIRecommendation[] = await response.json();
+      const { apiRequest } = await import('@/lib/api/client');
+      const result = await apiRequest<AIRecommendation[]>('/api/v1/ai-assistant/recommend');
+      if (result.ok) {
+        const freshRecs = result.data;
         const now = new Date().toISOString();
         const recsWithMeta = freshRecs.map(r => ({ ...r, syncedAt: now }));
         await db.aiRecommendations.bulkPut(recsWithMeta);

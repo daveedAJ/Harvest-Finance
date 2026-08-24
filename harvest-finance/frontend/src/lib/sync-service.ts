@@ -1,11 +1,13 @@
 import { openDB, IDBPDatabase } from 'idb';
+import { apiRequest } from '@/lib/api/client';
+import type { HttpMethod } from '@/lib/api/types';
 
 export interface OfflineAction {
   id: string;
   url: string;
   method: string;
-  body: any;
-  headers: any;
+  body: unknown;
+  headers: Record<string, string>;
   timestamp: number;
   idempotencyKey: string;
 }
@@ -33,7 +35,7 @@ class SyncService {
     return this.dbPromise;
   }
 
-  async queueAction(url: string, method: string, body: any, headers: any) {
+  async queueAction(url: string, method: string, body: unknown, headers: Record<string, string>) {
     const idempotencyKey = `offline_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const action: OfflineAction = {
       id: crypto.randomUUID(),
@@ -61,23 +63,23 @@ class SyncService {
 
     for (const action of actions) {
       try {
-        const response = await fetch(action.url, {
-          method: action.method,
+        const result = await apiRequest(action.url, {
+          method: action.method as HttpMethod,
           headers: {
             ...action.headers,
             'X-Idempotency-Key': action.idempotencyKey,
           },
-          body: JSON.stringify({
-            ...action.body,
+          body: {
+            ...(action.body as Record<string, unknown>),
             idempotencyKey: action.idempotencyKey,
-          }),
+          },
         });
 
-        if (response.ok || response.status === 202) {
+        if (result.ok || result.status === 202) {
           await db.delete(STORE_NAME, action.id);
           console.log('Action synced successfully:', action.id);
         } else {
-          console.error('Failed to sync action:', action.id, response.status);
+          console.error('Failed to sync action:', action.id, result.status);
         }
       } catch (error) {
         console.error('Network error during sync for action:', action.id, error);
