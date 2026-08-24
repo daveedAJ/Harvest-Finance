@@ -161,6 +161,7 @@ jobs:
         working-directory: harvest-finance/frontend
     env:
       NEXT_PUBLIC_API_URL: https://api.harvestfinance.io
+      ANALYZE: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -172,6 +173,17 @@ jobs:
 
       - run: npm ci
       - run: npm run build
+      - name: Route-level bundle budget
+        run: npm run check:budget
+      - name: Upload bundle report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-bundle-report-${{ github.sha }}
+          path: |
+            harvest-finance/frontend/.next/bundle-report.json
+            harvest-finance/frontend/.next/analyze/
+          retention-days: 14
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:

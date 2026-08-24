@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   LineChart, 
   Line, 
@@ -11,12 +11,12 @@ import {
   ResponsiveContainer,
   AreaChart,
   Area,
-  ComposedChart,
   Bar,
   BarChart
 } from 'recharts';
 import { Card, CardHeader, CardBody, Tooltip } from '@/components/ui';
-import { format } from 'date-fns';
+import { formatChartTick } from '@/lib/datetime';
+import { apiRequestOrThrow } from '@/lib/api/client';
 import { Info } from 'lucide-react';
 import { getTermTooltip } from '@/lib/defi-terms';
 
@@ -52,49 +52,39 @@ export const YieldAnalyticsPanel: React.FC<YieldAnalyticsPanelProps> = ({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchYieldAnalytics();
-    fetchCurrentApys();
-  }, [contractId, timeRange]);
-
-  const fetchYieldAnalytics = async () => {
+  const fetchYieldAnalytics = useCallback(async () => {
     try {
       setLoading(true);
       const url = contractId 
         ? `/api/v1/yield-analytics/contract/${contractId}?days=${timeRange}`
         : `/api/v1/yield-analytics?days=${timeRange}`;
       
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error('Failed to fetch yield analytics');
-      }
-      
-      const data = await response.json();
-      setAnalyticsData(data.items || []);
+      const data = await apiRequestOrThrow<{ items?: typeof analyticsData }>(url)
+      setAnalyticsData(data.items || [])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setLoading(false);
     }
-  };
+  }, [contractId, timeRange]);
 
-  const fetchCurrentApys = async () => {
+  const fetchCurrentApys = useCallback(async () => {
     try {
-      const response = await fetch('/api/v1/yield-analytics/current-apy');
-      if (!response.ok) {
-        throw new Error('Failed to fetch current APYs');
-      }
-      
-      const data = await response.json();
+      const data = await apiRequestOrThrow<typeof currentApys>('/api/v1/yield-analytics/current-apy')
       setCurrentApys(data || []);
     } catch (err) {
       console.error('Error fetching current APYs:', err);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    void fetchYieldAnalytics();
+    void fetchCurrentApys();
+  }, [fetchYieldAnalytics, fetchCurrentApys]);
 
   const processChartData = () => {
     return analyticsData.map(item => ({
-      date: format(new Date(item.date), 'MMM dd'),
+      date: formatChartTick(item.date),
       fullDate: item.date,
       sevenDayApy: item.sevenDayApy || 0,
       dailyApy: item.dailyApy || 0,
@@ -132,14 +122,14 @@ export const YieldAnalyticsPanel: React.FC<YieldAnalyticsPanelProps> = ({
     return `$${volume.toFixed(2)}`;
   };
 
-  const CustomTooltip = ({ active, payload, label }: any) => {
+  const CustomTooltip: React.FC<{ active?: boolean; payload?: Array<{ data: unknown; color?: string; name?: string; value?: number }>; label?: string }> = ({ active, payload, label }) => {
     if (active && payload && payload.length) {
       return (
         <div className="bg-white p-3 rounded-lg shadow-lg border border-gray-200">
           <p className="text-sm font-medium text-gray-900">{label}</p>
-          {payload.map((entry: any, index: number) => (
+          {payload.map((entry, index: number) => (
             <p key={index} className="text-sm" style={{ color: entry.color }}>
-              {entry.name}: {entry.name.includes('APY') ? formatApy(entry.value) : formatVolume(entry.value)}
+              {entry.name}: {entry.name?.includes('APY') ? formatApy(entry.value ?? 0) : formatVolume(entry.value ?? 0)}
             </p>
           ))}
         </div>

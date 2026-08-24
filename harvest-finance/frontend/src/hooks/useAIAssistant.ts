@@ -130,9 +130,10 @@ export const useAIAssistantStore = create<AIAssistantState>((set, get) => ({
   // Load persisted history from server-side store if available
   loadHistoryFromServer: async () => {
     try {
-      const res = await fetch("/api/v1/ai-assistant/chat");
-      if (!res.ok) return;
-      const body = await res.json();
+      const { apiRequest } = await import("@/lib/api/client");
+      const result = await apiRequest<{ history?: Array<{ user?: { content: string; timestamp?: string }; assistant?: { content: string; timestamp?: string } }> }>("/api/v1/ai-assistant/chat");
+      if (!result.ok) return;
+      const body = result.data;
       const history = body.history || [];
 
       const mapped: ChatEntry[] = [];
@@ -192,7 +193,7 @@ try {
     const parsed = JSON.parse(stored);
     // hydrate store with persisted values
     useAIAssistantStore.setState({
-      messages: (parsed.messages || []).map((m: any) => ({
+      messages: (parsed.messages || []).map((m: { id?: string; role?: string; content?: string; timestamp?: string; suggestions?: string[] }) => ({
         ...m,
         timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
       })),

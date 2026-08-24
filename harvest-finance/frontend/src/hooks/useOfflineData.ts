@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { db, VaultData, TransactionData, AIRecommendation, OfflineAction } from '@/lib/db';
 import { syncManager, SyncStatus, NetworkStatus } from '@/lib/db';
 import { useAuthStore } from '@/lib/stores/auth-store';
+import { apiRequest } from '@/lib/api/client';
 
 export interface UseOfflineDataReturn {
   isOnline: boolean;
@@ -20,7 +21,7 @@ export interface UseOfflineDataReturn {
   refreshData: () => Promise<void>;
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api/v1';
+const API_BASE = '/api/v1';
 
 export function useOfflineData(): UseOfflineDataReturn {
   const { token } = useAuthStore();
@@ -35,13 +36,32 @@ export function useOfflineData(): UseOfflineDataReturn {
   const [recommendations, setRecommendations] = useState<AIRecommendation[]>([]);
   const isInitialized = useRef(false);
 
+  const loadCachedData = useCallback(async (): Promise<void> => {
+    if (isInitialized.current) return;
+    isInitialized.current = true;
+
+    const [cachedVaults, cachedTransactions, cachedRecommendations] = await Promise.all([
+      db.vaults.toArray(),
+      db.transactions.orderBy('timestamp').reverse().limit(50).toArray(),
+      db.aiRecommendations.toArray(),
+    ]);
+
+    const pendingCount = await db.offlineQueue.where('status').equals('pending').count();
+    
+    setVaults(cachedVaults);
+    setTransactions(cachedTransactions);
+    setRecommendations(cachedRecommendations);
+    setPendingActions(pendingCount);
+  }, []);
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
 
-    setIsOnline(navigator.onLine);
+    const updateOnlineStatus = () => setIsOnline(navigator.onLine);
+    updateOnlineStatus();
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
@@ -65,25 +85,7 @@ export function useOfflineData(): UseOfflineDataReturn {
       unsubscribeSync();
       syncManager.stopPeriodicSync();
     };
-  }, []);
-
-  const loadCachedData = async (): Promise<void> => {
-    if (isInitialized.current) return;
-    isInitialized.current = true;
-
-    const [cachedVaults, cachedTransactions, cachedRecommendations] = await Promise.all([
-      db.vaults.toArray(),
-      db.transactions.orderBy('timestamp').reverse().limit(50).toArray(),
-      db.aiRecommendations.toArray(),
-    ]);
-
-    const pendingCount = await db.offlineQueue.where('status').equals('pending').count();
-    
-    setVaults(cachedVaults);
-    setTransactions(cachedTransactions);
-    setRecommendations(cachedRecommendations);
-    setPendingActions(pendingCount);
-  };
+  }, [loadCachedData]);
 
   const cacheVaultData = useCallback(async (vault: VaultData): Promise<void> => {
     await db.vaults.put({ ...vault, updatedAt: new Date().toISOString() });
@@ -115,30 +117,28 @@ export function useOfflineData(): UseOfflineDataReturn {
     if (!token) return;
 
     try {
-      const headers = { Authorization: `Bearer ${token}` };
-      
-      const [vaultsRes, txRes, recRes] = await Promise.all([
-        fetch(`${API_BASE}/vaults`, { headers }),
-        fetch(`${API_BASE}/transactions`, { headers }),
-        fetch(`${API_BASE}/ai-assistant/recommend`, { headers }),
+      const [vaultsResult, txResult, recResult] = await Promise.all([
+        apiRequest<VaultData[]>(`${API_BASE}/vaults`, { auth: token }),
+        apiRequest<TransactionData[]>(`${API_BASE}/transactions`, { auth: token }),
+        apiRequest<AIRecommendation[]>(`${API_BASE}/ai-assistant/recommend`, { auth: token }),
       ]);
 
-      if (vaultsRes.ok) {
-        const freshVaults: VaultData[] = await vaultsRes.json();
+      if (vaultsResult.ok) {
+        const freshVaults = vaultsResult.data;
         const syncedVaults = freshVaults.map(v => ({ ...v, syncedAt: new Date().toISOString() }));
         await db.vaults.bulkPut(syncedVaults);
         setVaults(syncedVaults);
       }
 
-      if (txRes.ok) {
-        const freshTx: TransactionData[] = await txRes.json();
+      if (txResult.ok) {
+        const freshTx = txResult.data;
         const syncedTx = freshTx.map(t => ({ ...t, syncedAt: new Date().toISOString() }));
         await db.transactions.bulkPut(syncedTx);
         setTransactions(syncedTx.slice(0, 50));
       }
 
-      if (recRes.ok) {
-        const freshRecs: AIRecommendation[] = await recRes.json();
+      if (recResult.ok) {
+        const freshRecs = recResult.data;
         const syncedRecs = freshRecs.map(r => ({ ...r, syncedAt: new Date().toISOString() }));
         await db.aiRecommendations.bulkPut(syncedRecs);
         setRecommendations(syncedRecs);
@@ -192,7 +192,10 @@ export function useOfflineIndicator(): { isOnline: boolean; pendingCount: number
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    setState({ isOnline: navigator.onLine, pendingCount: 0 });
+    const updateInitial = () => {
+      setState(prev => ({ ...prev, isOnline: navigator.onLine, pendingCount: 0 }));
+    };
+    updateInitial();
 
     const handleOnline = () => setState(prev => ({ ...prev, isOnline: true }));
     const handleOffline = () => setState(prev => ({ ...prev, isOnline: false }));
