@@ -324,27 +324,12 @@ export class AuthService {
    *
    * Validates the refresh token against the stored (hashed) session record and
    * updates `lastUsedAt` so the sessions list stays current.
-   * Refresh access token — implements refresh token rotation with family-level
-   * reuse detection.
-   *
-   * Happy path:
-   *  1. Verify the JWT signature & expiry.
-   *  2. Look up the matching session row by hashed token.
-   *  3. If the session is already revoked → the token was replayed after rotation.
-   *     Revoke the entire family and throw 401.
-   *  4. Mark the current session as revoked + set replacedBy.
-   *  5. Issue a brand-new access token AND a brand-new refresh token.
-   *  6. Store the new session in the same family.
-   *  7. Return both tokens.
    */
   async refresh(refreshTokenDto: RefreshTokenDto): Promise<TokenResponseDto> {
     const { refresh_token } = refreshTokenDto;
 
-    // Step 1 — verify JWT signature & expiry
-    let payload: { sub: string; email: string; role: string; jti?: string };
+    let payload: { sub: string; email: string; role: string; sessionId?: string };
     try {
-      // Verify refresh token signature and expiry
-      const payload = await this.jwtService.verifyAsync(refresh_token, {
       payload = await this.jwtService.verifyAsync(refresh_token, {
         secret:
           this.configService.get<string>('JWT_REFRESH_SECRET') ||
@@ -354,7 +339,6 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
 
-    // Step 2 — find the matching session by scanning hashed tokens for this user
     const user = await this.userRepository.findOne({
       where: { id: payload.sub },
     });
@@ -363,59 +347,13 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-      // Validate the refresh token against the stored session record.
-      // The sessionId claim was embedded at token-generation time.
-      if (payload.sessionId) {
-        const session = await this.sessionRepository.findOne({
-          where: { id: payload.sessionId, user: { id: user.id } },
-          select: ['id', 'refreshToken', 'expiresAt'],
-        });
-
-        if (!session || session.expiresAt < new Date()) {
-          throw new UnauthorizedException('Session has expired or been revoked');
-        }
-
-        const tokenMatches = await bcrypt.compare(
-          refresh_token,
-          session.refreshToken,
-        );
-        if (!tokenMatches) {
-          throw new UnauthorizedException('Invalid refresh token');
-        }
-
-        // Touch lastUsedAt so the sessions list reflects recent activity
-        await this.sessionRepository.update(session.id, {
-          lastUsedAt: new Date(),
-        });
-      }
-
-      // Issue a new access token (same session, same refresh token — no rotation)
-      const accessToken = await this.jwtService.signAsync(
-        {
-          sub: user.id,
-          email: user.email,
-          role: user.role,
-          sessionId: payload.sessionId,
-        },
-        {
-          expiresIn: this.accessTokenExpiry,
-          secret:
-            this.configService.get<string>('JWT_SECRET') ||
-            'super_secret_jwt_key',
-        },
-      );
-
-      return { access_token: accessToken, token_type: 'Bearer' };
-    } catch (error) {
-      if (error instanceof UnauthorizedException) throw error;
-    // Fetch all non-expired sessions for this user so we can bcrypt-compare
-    const candidateSessions = await this.sessionRepository.find({
+    const sessions = await this.sessionRepository.find({
       where: { user: { id: user.id } },
       relations: ['user'],
     });
 
     let matchedSession: Session | null = null;
-    for (const session of candidateSessions) {
+    for (const session of sessions) {
       if (await bcrypt.compare(refresh_token, session.refreshToken)) {
         matchedSession = session;
         break;
@@ -423,11 +361,9 @@ export class AuthService {
     }
 
     if (!matchedSession) {
-      // Token is cryptographically valid but not in the DB — treat as stolen
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
 
-    // Step 3 — reuse detection: token was already consumed
     if (matchedSession.isRevoked) {
       await this.revokeFamilyAndAlert(matchedSession.familyId, user, refresh_token);
       throw new UnauthorizedException(
@@ -435,17 +371,14 @@ export class AuthService {
       );
     }
 
-    // Step 4 — atomically revoke the current session
-    const newSessionId = uuidv4(); // reserve the ID so we can set replacedBy
+    const newSessionId = uuidv4();
     await this.sessionRepository.update(matchedSession.id, {
       isRevoked: true,
       replacedBy: newSessionId,
       lastUsedAt: new Date(),
     });
 
-    // Step 5 — generate new token pair
     const jwtPayload = { sub: user.id, email: user.email, role: user.role };
-
     const [accessToken, newRefreshToken] = await Promise.all([
       this.jwtService.signAsync(jwtPayload, {
         expiresIn: this.accessTokenExpiry,
@@ -460,7 +393,6 @@ export class AuthService {
       }),
     ]);
 
-    // Step 6 — store the new session in the SAME family
     const hashedNewRefreshToken = await bcrypt.hash(newRefreshToken, this.saltRounds);
     const newSession = this.sessionRepository.create({
       id: newSessionId,
@@ -481,7 +413,6 @@ export class AuthService {
       'AuthService',
     );
 
-    // Step 7 — return both tokens
     return {
       access_token: accessToken,
       refresh_token: newRefreshToken,
@@ -689,6 +620,36 @@ export class AuthService {
      };
    }
 
+  async changePassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<{ success: boolean; message: string }> {
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+      select: ['id', 'password'],
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
+    if (!isCurrentPasswordValid) {
+      throw new UnauthorizedException('Current password is incorrect');
+    }
+
+    await this.validatePasswordStrength(newPassword);
+
+    const hashedPassword = await bcrypt.hash(newPassword, this.saltRounds);
+    await this.userRepository.update(user.id, { password: hashedPassword });
+
+    return {
+      success: true,
+      message: 'Password changed successfully',
+    };
+  }
+
   /**
    * Validate user (for JWT strategy)
    */
@@ -700,27 +661,20 @@ export class AuthService {
   }
 
   /**
-   * Generate access and refresh tokens, persisting a session record enriched
-   * with the caller's User-Agent and IP address.
-   *
-   * @param user         - Authenticated user entity
-   * @param userAgent    - Raw User-Agent header (optional)
-   * @param ipAddress    - Client IP address (optional)
+   * Generate access and refresh tokens and persist a new session row.
+   * Each call starts a brand-new token family (used on login/register/OAuth).
    */
   async generateTokens(
     user: User,
     userAgent?: string,
     ipAddress?: string,
   ): Promise<{ accessToken: string; refreshToken: string }> {
-    // Save the session first so we can embed its ID in the JWT payload.
-    const hashedRefreshTokenPlaceholder = ''; // filled in after hashing below
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + this.refreshTokenExpiryMs);
     const deviceName = deriveDeviceName(userAgent);
 
-    // Create a temporary session to get the UUID before signing tokens.
     const session = this.sessionRepository.create({
       user,
-      refreshToken: hashedRefreshTokenPlaceholder,
+      refreshToken: '',
       userAgent: userAgent ?? null,
       ipAddress: ipAddress ?? null,
       deviceName,
@@ -729,21 +683,11 @@ export class AuthService {
     });
     await this.sessionRepository.save(session);
 
-   * Generate access and refresh tokens and persist a new session row.
-   * Each call starts a brand-new token family (used on login/register/OAuth).
-   */
-  private async generateTokens(
-    user: User,
-    context?: { userAgent?: string; ipAddress?: string },
-  ): Promise<{
-    accessToken: string;
-    refreshToken: string;
-  }> {
     const payload = {
       sub: user.id,
       email: user.email,
       role: user.role,
-      sessionId: session.id, // allows DELETE /auth/sessions to identify current session
+      sessionId: session.id,
     };
 
     const [accessToken, refreshToken] = await Promise.all([
@@ -761,16 +705,14 @@ export class AuthService {
       }),
     ]);
 
-    // Persist hashed refresh token onto the already-saved session row.
-    // Store hashed refresh token with a new family ID
     const hashedRefreshToken = await bcrypt.hash(refreshToken, this.saltRounds);
     await this.sessionRepository.update(session.id, {
       refreshToken: hashedRefreshToken,
-      familyId: uuidv4(),   // new family for every fresh login
+      familyId: uuidv4(),
       isRevoked: false,
       replacedBy: null,
-      userAgent: context?.userAgent ?? 'Unknown',
-      ipAddress: context?.ipAddress ?? 'Unknown',
+      userAgent: userAgent ?? 'Unknown',
+      ipAddress: ipAddress ?? 'Unknown',
       lastUsedAt: new Date(),
       expiresAt: new Date(Date.now() + this.refreshTokenExpiryMs),
     });
