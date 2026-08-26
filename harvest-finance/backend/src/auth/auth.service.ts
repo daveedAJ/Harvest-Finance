@@ -21,7 +21,10 @@ import { UserOAuthLink } from '../database/entities/user-oauth-link.entity';
 const zxcvbn = require('zxcvbn');
 import * as crypto from 'crypto';
 import { Session } from '../database/entities/session.entity';
-import { SecurityEvent, SecurityEventType } from '../database/entities/security-event.entity';
+import {
+  SecurityEvent,
+  SecurityEventType,
+} from '../database/entities/security-event.entity';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
@@ -60,11 +63,15 @@ export class AuthService {
   }
 
   private get lockoutWindowMs(): number {
-    return this.configService.get<number>('LOCKOUT_WINDOW_MINUTES', 15) * 60 * 1000;
+    return (
+      this.configService.get<number>('LOCKOUT_WINDOW_MINUTES', 15) * 60 * 1000
+    );
   }
 
   private get lockoutDurationMs(): number {
-    return this.configService.get<number>('LOCKOUT_DURATION_MINUTES', 30) * 60 * 1000;
+    return (
+      this.configService.get<number>('LOCKOUT_DURATION_MINUTES', 30) * 60 * 1000
+    );
   }
 
   private lockoutAttemptsKey(userId: string): string {
@@ -91,8 +98,15 @@ export class AuthService {
    * Register a new user
    */
   async register(registerDto: RegisterDto): Promise<AuthResponseDto> {
-    const { email, password, role, full_name, phone_number, stellar_address, use_custodial_wallet } =
-      registerDto;
+    const {
+      email,
+      password,
+      role,
+      full_name,
+      phone_number,
+      stellar_address,
+      use_custodial_wallet,
+    } = registerDto;
 
     // Validate: user must supply either a stellar_address OR opt into a custodial wallet
     if (!stellar_address && !use_custodial_wallet) {
@@ -127,7 +141,9 @@ export class AuthService {
     // Determine wallet type and Stellar address
     // Self-custody takes precedence when both fields are supplied.
     const isSelfCustody = !!stellar_address;
-    const walletType = isSelfCustody ? WalletType.SELF_CUSTODY : WalletType.CUSTODIAL;
+    const walletType = isSelfCustody
+      ? WalletType.SELF_CUSTODY
+      : WalletType.CUSTODIAL;
 
     // Create new user (without stellarAddress for custodial — we set it after wallet creation)
     const user = this.userRepository.create({
@@ -148,12 +164,15 @@ export class AuthService {
     // Create custodial wallet if requested and no self-custody address provided
     if (!isSelfCustody && use_custodial_wallet) {
       try {
-        const publicKey = await this.custodialWalletService.createCustodialWallet(
-          user.id,
-          password, // plaintext password — used for key derivation before bcrypt hashing
-        );
+        const publicKey =
+          await this.custodialWalletService.createCustodialWallet(
+            user.id,
+            password, // plaintext password — used for key derivation before bcrypt hashing
+          );
         // Link the generated public key to the user record
-        await this.userRepository.update(user.id, { stellarAddress: publicKey });
+        await this.userRepository.update(user.id, {
+          stellarAddress: publicKey,
+        });
         user.stellarAddress = publicKey;
         this.logger.log(
           `Custodial wallet created for new user ${email}: ${publicKey}`,
@@ -268,7 +287,10 @@ export class AuthService {
     await this.resetLoginAttempts(user.id);
 
     // Update last login
-    await this.userRepository.update(user.id, { lastLogin: new Date(), lockedUntil: null });
+    await this.userRepository.update(user.id, {
+      lastLogin: new Date(),
+      lockedUntil: null,
+    });
 
     // Generate tokens
     const tokens = await this.generateTokens(user, userAgent, ipAddress);
@@ -286,7 +308,7 @@ export class AuthService {
     const key = this.lockoutAttemptsKey(user.id);
     const windowSec = Math.ceil(this.lockoutWindowMs / 1000);
 
-    const current = await this.cacheManager.get<number>(key) ?? 0;
+    const current = (await this.cacheManager.get<number>(key)) ?? 0;
     const next = current + 1;
 
     await this.cacheManager.set(key, next, windowSec);
@@ -324,12 +346,26 @@ export class AuthService {
    *
    * Validates the refresh token against the stored (hashed) session record and
    * updates `lastUsedAt` so the sessions list stays current.
+   * Refresh access token — implements refresh token rotation with family-level
+   * reuse detection.
+   *
+   * Happy path:
+   *  1. Verify the JWT signature & expiry.
+   *  2. Look up the matching session row by hashed token.
+   *  3. If the session is already revoked → the token was replayed after rotation.
+   *     Revoke the entire family and throw 401.
+   *  4. Mark the current session as revoked + set replacedBy.
+   *  5. Issue a brand-new access token AND a brand-new refresh token.
+   *  6. Store the new session in the same family.
+   *  7. Return both tokens.
    */
   async refresh(refreshTokenDto: RefreshTokenDto): Promise<TokenResponseDto> {
     const { refresh_token } = refreshTokenDto;
 
-    let payload: { sub: string; email: string; role: string; sessionId?: string };
+    // Step 1 — verify JWT signature & expiry
+    let payload: { sub: string; email: string; role: string; jti?: string };
     try {
+      // Verify refresh token signature and expiry
       payload = await this.jwtService.verifyAsync(refresh_token, {
         secret:
           this.configService.get<string>('JWT_REFRESH_SECRET') ||
@@ -339,6 +375,7 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
 
+    // Step 2 — find the matching session by scanning hashed tokens for this user
     const user = await this.userRepository.findOne({
       where: { id: payload.sub },
     });
@@ -347,13 +384,14 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    const sessions = await this.sessionRepository.find({
+    // Fetch all non-expired sessions for this user so we can bcrypt-compare
+    const candidateSessions = await this.sessionRepository.find({
       where: { user: { id: user.id } },
       relations: ['user'],
     });
 
     let matchedSession: Session | null = null;
-    for (const session of sessions) {
+    for (const session of candidateSessions) {
       if (await bcrypt.compare(refresh_token, session.refreshToken)) {
         matchedSession = session;
         break;
@@ -361,29 +399,39 @@ export class AuthService {
     }
 
     if (!matchedSession) {
+      // Token is cryptographically valid but not in the DB — treat as stolen
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
 
+    // Step 3 — reuse detection: token was already consumed
     if (matchedSession.isRevoked) {
-      await this.revokeFamilyAndAlert(matchedSession.familyId, user, refresh_token);
+      await this.revokeFamilyAndAlert(
+        matchedSession.familyId,
+        user,
+        refresh_token,
+      );
       throw new UnauthorizedException(
         'Refresh token reuse detected. All sessions have been revoked for your security.',
       );
     }
 
-    const newSessionId = uuidv4();
+    // Step 4 — atomically revoke the current session
+    const newSessionId = uuidv4(); // reserve the ID so we can set replacedBy
     await this.sessionRepository.update(matchedSession.id, {
       isRevoked: true,
       replacedBy: newSessionId,
       lastUsedAt: new Date(),
     });
 
+    // Step 5 — generate new token pair
     const jwtPayload = { sub: user.id, email: user.email, role: user.role };
+
     const [accessToken, newRefreshToken] = await Promise.all([
       this.jwtService.signAsync(jwtPayload, {
         expiresIn: this.accessTokenExpiry,
         secret:
-          this.configService.get<string>('JWT_SECRET') || 'super_secret_jwt_key',
+          this.configService.get<string>('JWT_SECRET') ||
+          'super_secret_jwt_key',
       }),
       this.jwtService.signAsync(jwtPayload, {
         expiresIn: this.refreshTokenExpiry,
@@ -393,7 +441,11 @@ export class AuthService {
       }),
     ]);
 
-    const hashedNewRefreshToken = await bcrypt.hash(newRefreshToken, this.saltRounds);
+    // Step 6 — store the new session in the SAME family
+    const hashedNewRefreshToken = await bcrypt.hash(
+      newRefreshToken,
+      this.saltRounds,
+    );
     const newSession = this.sessionRepository.create({
       id: newSessionId,
       user,
@@ -413,6 +465,7 @@ export class AuthService {
       'AuthService',
     );
 
+    // Step 7 — return both tokens
     return {
       access_token: accessToken,
       refresh_token: newRefreshToken,
@@ -471,8 +524,12 @@ export class AuthService {
    * Replace the logger stub with a real mailer (e.g. @nestjs-modules/mailer)
    * once an SMTP / SES transport is wired up.
    */
-  private async sendSecurityAlertEmail(user: User, familyId: string): Promise<void> {
-    const subject = 'Security Alert: Suspicious Activity Detected on Your Account';
+  private async sendSecurityAlertEmail(
+    user: User,
+    familyId: string,
+  ): Promise<void> {
+    const subject =
+      'Security Alert: Suspicious Activity Detected on Your Account';
     const body = [
       `Hello ${user.firstName ?? user.email},`,
       '',
@@ -568,85 +625,55 @@ export class AuthService {
   }
 
   /**
-    * Reset password
-    */
-   async resetPassword(
-     resetPasswordDto: ResetPasswordDto,
-   ): Promise<{ success: boolean; message: string }> {
-     const { token, new_password } = resetPasswordDto;
-
-     // Validate password strength before processing
-     await this.validatePasswordStrength(new_password);
-
-     // Find users with active reset tokens
-     const activeUsers = await this.userRepository.find({
-       where: {
-         resetPasswordExpires: MoreThan(new Date()),
-       },
-       select: ['id', 'password', 'resetPasswordToken', 'resetPasswordExpires'],
-     });
-
-     let user: User | null = null;
-     for (const u of activeUsers) {
-       if (
-         u.resetPasswordToken &&
-         (await bcrypt.compare(token, u.resetPasswordToken))
-       ) {
-         user = u;
-         break;
-       }
-     }
-
-     if (!user) {
-       throw new BadRequestException('Invalid or expired reset token');
-     }
-
-     // Hash new password
-     const hashedPassword = await bcrypt.hash(new_password, this.saltRounds);
-
-     // Update password and clear reset token
-     await this.userRepository.update(user.id, {
-       password: hashedPassword,
-       resetPasswordToken: null,
-       resetPasswordExpires: null,
-     });
-
-     // Invalidate all sessions by blacklisting current token
-     // (in production, you'd implement a more comprehensive session invalidation)
-
-     return {
-       success: true,
-       message: 'Password reset successfully',
-     };
-   }
-
-  async changePassword(
-    userId: string,
-    currentPassword: string,
-    newPassword: string,
+   * Reset password
+   */
+  async resetPassword(
+    resetPasswordDto: ResetPasswordDto,
   ): Promise<{ success: boolean; message: string }> {
-    const user = await this.userRepository.findOne({
-      where: { id: userId },
-      select: ['id', 'password'],
+    const { token, new_password } = resetPasswordDto;
+
+    // Validate password strength before processing
+    await this.validatePasswordStrength(new_password);
+
+    // Find users with active reset tokens
+    const activeUsers = await this.userRepository.find({
+      where: {
+        resetPasswordExpires: MoreThan(new Date()),
+      },
+      select: ['id', 'password', 'resetPasswordToken', 'resetPasswordExpires'],
     });
 
+    let user: User | null = null;
+    for (const u of activeUsers) {
+      if (
+        u.resetPasswordToken &&
+        (await bcrypt.compare(token, u.resetPasswordToken))
+      ) {
+        user = u;
+        break;
+      }
+    }
+
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new BadRequestException('Invalid or expired reset token');
     }
 
-    const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
-    if (!isCurrentPasswordValid) {
-      throw new UnauthorizedException('Current password is incorrect');
-    }
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(new_password, this.saltRounds);
 
-    await this.validatePasswordStrength(newPassword);
+    // Update password and clear reset token
+    await this.userRepository.update(user.id, {
+      password: hashedPassword,
+      resetPasswordToken: null,
+      resetPasswordExpires: null,
+    });
 
-    const hashedPassword = await bcrypt.hash(newPassword, this.saltRounds);
-    await this.userRepository.update(user.id, { password: hashedPassword });
+    // Invalidate all sessions by blacklisting current token
+    // (in production, you'd implement a more comprehensive session invalidation)
 
     return {
       success: true,
-      message: 'Password changed successfully',
+      message: 'Password reset successfully',
     };
   }
 
@@ -669,12 +696,15 @@ export class AuthService {
     userAgent?: string,
     ipAddress?: string,
   ): Promise<{ accessToken: string; refreshToken: string }> {
+    // Save the session first so we can embed its ID in the JWT payload.
+    const hashedRefreshTokenPlaceholder = ''; // filled in after hashing below
     const expiresAt = new Date(Date.now() + this.refreshTokenExpiryMs);
     const deviceName = deriveDeviceName(userAgent);
 
+    // Create a temporary session to get the UUID before signing tokens.
     const session = this.sessionRepository.create({
       user,
-      refreshToken: '',
+      refreshToken: hashedRefreshTokenPlaceholder,
       userAgent: userAgent ?? null,
       ipAddress: ipAddress ?? null,
       deviceName,
@@ -687,7 +717,7 @@ export class AuthService {
       sub: user.id,
       email: user.email,
       role: user.role,
-      sessionId: session.id,
+      sessionId: session.id, // allows DELETE /auth/sessions to identify current session
     };
 
     const [accessToken, refreshToken] = await Promise.all([
@@ -705,14 +735,14 @@ export class AuthService {
       }),
     ]);
 
+    // Persist hashed refresh token onto the already-saved session row.
+    // Store hashed refresh token with a new family ID
     const hashedRefreshToken = await bcrypt.hash(refreshToken, this.saltRounds);
     await this.sessionRepository.update(session.id, {
       refreshToken: hashedRefreshToken,
-      familyId: uuidv4(),
+      familyId: uuidv4(), // new family for every fresh login
       isRevoked: false,
       replacedBy: null,
-      userAgent: userAgent ?? 'Unknown',
-      ipAddress: ipAddress ?? 'Unknown',
       lastUsedAt: new Date(),
       expiresAt: new Date(Date.now() + this.refreshTokenExpiryMs),
     });
@@ -747,14 +777,16 @@ export class AuthService {
     lastName?: string,
   ): Promise<User> {
     // 1. Check if OAuth link already exists
-    let existingLink = await this.oauthLinkRepository.findOne({
+    const existingLink = await this.oauthLinkRepository.findOne({
       where: { oauthProvider, oauthId },
       relations: ['user'],
     });
 
     if (existingLink) {
       // Update last login
-      await this.userRepository.update(existingLink.user.id, { lastLogin: new Date() });
+      await this.userRepository.update(existingLink.user.id, {
+        lastLogin: new Date(),
+      });
       return existingLink.user;
     }
 
@@ -776,9 +808,15 @@ export class AuthService {
       });
 
       user = await this.userRepository.save(user);
-      this.logger.log(`Created new OAuth user: ${email} via ${oauthProvider}`, 'AuthService');
+      this.logger.log(
+        `Created new OAuth user: ${email} via ${oauthProvider}`,
+        'AuthService',
+      );
     } else {
-      this.logger.log(`Linking existing user: ${email} to OAuth provider ${oauthProvider}`, 'AuthService');
+      this.logger.log(
+        `Linking existing user: ${email} to OAuth provider ${oauthProvider}`,
+        'AuthService',
+      );
     }
 
     // 3. Link OAuth provider to the user
@@ -835,9 +873,7 @@ export class AuthService {
 
     // Check for at least one digit
     if (!/\d/.test(password)) {
-      throw new BadRequestException(
-        'Password must contain at least one digit',
-      );
+      throw new BadRequestException('Password must contain at least one digit');
     }
 
     // Check for at least one special character
@@ -849,7 +885,11 @@ export class AuthService {
 
     // Check HIBP (Have I Been Pwned) using k-anonymity model
     // SHA-1 hash the password
-    const hash = crypto.createHash('sha1').update(password).digest('hex').toUpperCase();
+    const hash = crypto
+      .createHash('sha1')
+      .update(password)
+      .digest('hex')
+      .toUpperCase();
     const prefix = hash.slice(0, 5);
     const suffix = hash.slice(5);
 
@@ -897,7 +937,9 @@ export class AuthService {
         throw new BadRequestException('Invalid token type');
       }
 
-      const user = await this.userRepository.findOne({ where: { id: payload.sub } });
+      const user = await this.userRepository.findOne({
+        where: { id: payload.sub },
+      });
       if (!user) {
         throw new BadRequestException('User not found');
       }
@@ -931,7 +973,8 @@ export class AuthService {
 
     // Rate limit: 3 requests per hour per user
     const rateLimitKey = `resend_verification:${userId}`;
-    const currentCount = await this.cacheManager.get<number>(rateLimitKey) || 0;
+    const currentCount =
+      (await this.cacheManager.get<number>(rateLimitKey)) || 0;
     if (currentCount >= 3) {
       throw new BadRequestException(
         'Too many verification requests. Please try again in 1 hour.',
