@@ -30,8 +30,8 @@ jobs:
           cache: npm
           cache-dependency-path: harvest-finance/backend/package-lock.json
 
-      - run: npm ci || true
-      - run: npm run lint || true
+      - run: npm ci
+      - run: npm run lint
 
   backend-test:
     name: Backend — Unit + Integration Tests
@@ -88,7 +88,7 @@ jobs:
 
       - run: npm ci
       - run: npm run build
-      - run: npm test -- --forceExit --passWithNoTests || true
+      - run: npm run test:cov -- --forceExit --testPathPattern="(spec|e2e)"
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         if: always()
@@ -149,8 +149,10 @@ jobs:
           cache-dependency-path: harvest-finance/frontend/package-lock.json
 
       - run: npm ci
-      - run: npm test -- --passWithNoTests
+      - run: npm run test:cov -- --passWithNoTests
       - run: npm run test:vitest -- --run --passWithNoTests
+      - name: Frontend accessibility smoke tests
+        run: npm run test -- --testPathPattern="a11y" --passWithNoTests
 
   frontend-build:
     name: Frontend — Next.js Build
@@ -171,7 +173,7 @@ jobs:
           cache: npm
           cache-dependency-path: harvest-finance/frontend/package-lock.json
 
-      - run: npm ci || true
+      - run: npm ci
       - run: npm run build
       - name: Route-level bundle budget
         run: npm run check:budget
@@ -207,11 +209,11 @@ jobs:
 
       - name: Run forge tests
         working-directory: contracts
-        run: forge test -vvv || true
+        run: forge test -vvv
 
       - name: Forge coverage
         working-directory: contracts
-        run: forge coverage --report lcov || true
+        run: forge coverage --report lcov
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4
